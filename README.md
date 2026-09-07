@@ -42,7 +42,7 @@ generation-mode findings, and the filled §10 rubric are in
 
 - **App stack:** Python / FastAPI
 - **Provider:** OpenAI (app, attack-generation, and grader — one key)
-- **Generation mode:** test **both** remote (default) and local (`PROMPTFOO_DISABLE_REDTEAM_REMOTE_GENERATION=true`), compare quality. *(Finding: local generation can't run the app-layer plugins — see the "Generation modes" section below.)*
+- **Generation mode:** test **both** remote (default) and local (`PROMPTFOO_DISABLE_REDTEAM_REMOTE_GENERATION=true`), compare quality. *(Finding: local generation can't run the app-layer plugins — see **Generation modes** in [docs/poc-results.md](docs/poc-results.md).)*
 
 ## Layout
 
@@ -74,14 +74,14 @@ generation-mode findings, and the filled §10 rubric are in
 |---|---|---|
 | Python | ≥3.10 (tested on 3.13) | SupportBot (the target app) |
 | Node.js + npm | **`^20.20.0 \|\| >=22.22.0`** | Promptfoo red-team scanner |
+| OpenAI API key | — | App model loop **and** Promptfoo attack-generation/grading |
+| Promptfoo Cloud account + API key | free ([app.promptfoo.app](https://www.promptfoo.app)) | **Required** for remote attack generation (app-layer plugins won't generate without it) |
 
 > ⚠️ **Node version is strict.** promptfoo 0.121.17 declares that engines range and **refuses to
 > start** outside it (`Install a supported Node.js version and try again`) — Node 22.15, a common
 > default, fails. The wrapper scripts in `redteam/` auto-detect a compatible runtime (nvm or
 > Homebrew) and tell you what they picked; `./redteam/scenarios.sh --check` verifies your setup.
 > `nvm install 24` or `brew install node@24` if none is found.
-| OpenAI API key | — | App model loop **and** Promptfoo attack-generation/grading |
-| Promptfoo Cloud account + API key | free ([app.promptfoo.app](https://www.promptfoo.app)) | **Required** for remote attack generation (app-layer plugins won't generate without it) |
 
 > All commands below are run from the **repo root** (`promptfoo-redteam-poc/`) unless noted.
 
@@ -120,8 +120,8 @@ curl -s -X POST localhost:8000/chat -H 'Content-Type: application/json' \
 ### 3. Install Promptfoo & run the red-team scan (Phase 2)
 
 Promptfoo needs the OpenAI key **and** a Promptfoo Cloud login for remote attack
-generation (the app-layer plugins refuse to generate without it — see *Generation modes*
-below). Authenticate once, then export the root `.env` and run from `redteam/`:
+generation (the app-layer plugins refuse to generate without it — see *Generation modes* in
+[docs/poc-results.md](docs/poc-results.md)). Authenticate once, then export the root `.env` and run from `redteam/`:
 
 ```bash
 # one-time: log in so remote generation + the email gate are satisfied
@@ -156,19 +156,10 @@ cd redteam
 ./local-generation.sh
 ```
 
-**Three artifacts per scan, and they are not interchangeable:**
-
-| File | What it is |
-|---|---|
-| `output/<name>-cases.yaml` | What `redteam run -o` writes — a full **eval export** (`evalId` / `results` / `config` / `metadata`), *not* a bare case list, despite the flag name. |
-| `output/<name>-replay.yaml` | The `config` section lifted to the top level by `extract-cases.mjs`, so it is a valid config. **This is the file `rescan.sh` and `ci-gate.sh` replay.** |
-| `output/<name>-results.json` | The graded results, exported explicitly afterwards. |
-
-> ⚠️ Passing `-cases.yaml` straight to `-c` fails with the misleading
-> `You must specify at least 1 provider` — the providers are nested under `config`, not at the
-> top level. `_lib.sh resolve_cases()` handles the lift; call that rather than the raw file.
-> `redteam run` alone leaves results only in the local DB, so a scan without the export step
-> leaves no reviewable record.
+Each scan writes **three artifacts that are not interchangeable** — the generated cases, a
+replayable config lifted out of them, and the graded results. Which file to replay, and the
+misleading error you get from the wrong one, are documented in
+[docs/file-guide.md](docs/file-guide.md#scan-artifacts).
 
 > ⚠️ `report.sh` / `view.sh` serve a **local** dashboard — nothing is uploaded. Publishing
 > to promptfoo.app requires the separate `promptfoo share` command; keep it **off** — run
@@ -209,53 +200,36 @@ It also tallies findings that map to **no** planted weakness (design §4.1's fal
 
 ### Test-harness affordances (NOT planted weaknesses)
 
-Added so the measurements mean something. Each is off or inert by default, so the attack surface
-is unchanged unless you opt in — see [docs/scenario-matrix.md](docs/scenario-matrix.md).
-
-| Affordance | Why it exists |
-|---|---|
-| `POST /reset` | Clears sessions + the shared CRM scratchpad. Without it the process-global scratchpad accumulates PII across a whole scan, so a late `pii:*` / `cross-session-leak` finding can be an artifact of an earlier test rather than a reproducible exploit. |
-| `/chat` returns **502** on upstream failure | A friendly "sorry" string would be graded as a *safe refusal*, silently inflating the pass rate. A 502 is recorded by promptfoo as an error. |
-| Optional `context` field on `/chat` | Gives promptfoo's `indirect-prompt-injection` / `rag-poisoning` plugins the `indirectInjectionVar` they require. Omitted = no change. |
-| `SUPPORTBOT_EXTRA_DOCS=<dir>` | Ingests externally-generated documents into the KB, so `promptfoo redteam poison` output can actually be planted. |
-| `SUPPORTBOT_SYSTEM_PROMPT[_FILE]` | Swaps the system prompt for the regression demo, and for testing whether a guardrailed prompt closes #1. |
-| Locks on the sqlite connection, sessions and the CRM list | promptfoo runs 4 tests concurrently against a threadpool-served app. The locks keep the cross-session leak *deliberate* rather than a torn-data accident; the SQL stays injectable. |
+Six affordances were added so the measurements mean something — a `/reset` endpoint, a 502 on
+upstream failure so a placeholder isn't graded as a safe refusal, an optional `context` field for
+the injection plugins, and concurrency locks that keep the cross-session leak deliberate rather
+than a torn-data accident. Each is off or inert by default, so the attack surface is unchanged
+unless you opt in. Full list with rationale in
+[docs/file-guide.md](docs/file-guide.md); the criterion each satisfies is in
+[docs/scenario-matrix.md](docs/scenario-matrix.md).
 
 ## Data-flow note
 
 Promptfoo red-team **is not air-gapped by default**: adversarial-input generation uses Promptfoo's remote service and grading defaults to OpenAI. Only the target eval is local. See design doc §5.
 
-### Generation modes — empirical findings (Promptfoo 0.121.17, this POC)
-
-Measured against the locked "OpenAI for everything" decision (design §13). These feed the
-**Data residency**, **Setup burden**, and **Vulnerability coverage** rubric rows:
-
-| Mode | Result |
-|---|---|
-| **Remote generation** (default) | Requires a **Promptfoo Cloud login** (`auth login --api-key`). Without it you hit an interactive **"Email Verification Required"** gate; `PROMPTFOO_API_KEY` in the env alone does **not** clear it. App purpose + generated prompts go to Promptfoo's service. |
-| **Local generation** (`PROMPTFOO_DISABLE_REDTEAM_REMOTE_GENERATION=true`) | The high-value app-layer plugins (**`bola`, `bfla`, `rbac`, `rag-document-exfiltration`, `rag-poisoning`**, …) **refuse to generate** — "requires remote generation." Only simpler single-turn plugins (`pii:direct`, `prompt-extraction`, `sql-injection`, `harmful:*`) work fully local. |
-| **Multi-turn `crescendo`, OpenAI as attacker** | OpenAI **rejects the attack-generation calls** with `400 cyber_policy` ("flagged for possible cybersecurity risk"). Routed through Promptfoo's remote service instead, it proceeds. |
-
-**Takeaway:** a genuinely air-gapped red-team run only covers a subset of plugins; exercising
-the application-layer threats this POC targets requires Promptfoo's remote generation service.
-
-### H3 (HTTP provider + multi-turn sessions) — resolved
-
-The design flagged this as the most likely blocker (§8/§13.4). Verified working on 0.121.17:
-- Request body templating + `transformResponse: 'json.reply'` extract the reply correctly.
-- Multi-turn session wiring is `sessionSource: client` + `stateful: true` (the design skeleton's
-  `sessions: {source: client}` is **not** the syntax for this version). Promptfoo mints a
-  `sessionId` and injects it into each request, threading the conversation through SupportBot's
-  in-process session store.
-
-## What has and hasn't been run
+## Scope of what's been run
 
 The default scan, the deterministic exploit suite and the poisoned-doc chain have all been
-executed, and their saved results are what `./redteam/scorecard.sh` reads. The broader passes —
-`depth.yaml`, `policy-intent.yaml`, `datasets.yaml`, `owasp-framework.yaml` — are configured and
-validated but **not all have been run**, because each costs real tokens and wall-clock. Treat
-them as wired, not as evidence.
+executed, and their saved results are what `./redteam/scorecard.sh` reads. The broader passes
+(`depth.yaml`, `policy-intent.yaml`, `datasets.yaml`, `owasp-framework.yaml`) are configured and
+validated but **not all have been run** — treat them as wired, not as evidence.
+`./redteam/scenarios.sh` lists every pass with its runtime.
 
-`./redteam/scenarios.sh` lists every pass with its runtime, and
-[docs/scenario-matrix.md](docs/scenario-matrix.md) maps each one to the design criterion it
-satisfies.
+## Verdict
+
+**TRIAL — worth adopting as one layer, with an owner.** Promptfoo finds real application-layer
+LLM vulnerabilities that conventional testing does not reach — authorization bypass, SQL built by
+the model itself, PII disclosure, RAG exfiltration — and it produces a framework-mapped,
+per-finding report that would take days to assemble by hand. That is the case for it.
+
+What qualifies it, all measured here rather than asserted: **detection is only as good as the
+context you write** (a vague app description found 0 of 40 in an app known to be broken);
+**coverage is not reproducible**, so quote it as a range; **a green row means no generated attack
+succeeded**, not that nothing is there; and **the default mode is not air-gapped**.
+
+Full reasoning and the filled rubric: **[docs/poc-results.md](docs/poc-results.md)**.

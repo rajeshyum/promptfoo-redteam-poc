@@ -305,9 +305,9 @@ target model, **not** a Promptfoo limitation — and a useful defense-in-depth o
 ## Cross-references (full detail in README)
 
 - **Generation modes:** remote requires Promptfoo Cloud login; key app-layer plugins refuse to
-  generate locally; crescendo via OpenAI hits `cyber_policy`. (README → *Generation modes*.)
+  generate locally; crescendo via OpenAI hits `cyber_policy`. (Full detail below.)
 - **H3 (HTTP + multi-turn sessions):** resolved — `sessionSource: client` (+ `stateful: true`
-  for multi-turn). (README → *H3*.)
+  for multi-turn). (Full detail below.)
 
 ## Recommended next passes
 
@@ -384,3 +384,28 @@ Recommend a time-boxed trial on one real service: enrich purpose deeply (or eval
 `redteam discover`), replay committed case sets rather than regenerating, gate on a threshold
 in CI, measure cost with `cost-report.sh`, and confirm the compliance mappings independently
 before standardizing.
+
+---
+
+### Generation modes — empirical findings (Promptfoo 0.121.17, this POC)
+
+Measured against the locked "OpenAI for everything" decision (design §13). These feed the
+**Data residency**, **Setup burden**, and **Vulnerability coverage** rubric rows:
+
+| Mode | Result |
+|---|---|
+| **Remote generation** (default) | Requires a **Promptfoo Cloud login** (`auth login --api-key`). Without it you hit an interactive **"Email Verification Required"** gate; `PROMPTFOO_API_KEY` in the env alone does **not** clear it. App purpose + generated prompts go to Promptfoo's service. |
+| **Local generation** (`PROMPTFOO_DISABLE_REDTEAM_REMOTE_GENERATION=true`) | The high-value app-layer plugins (**`bola`, `bfla`, `rbac`, `rag-document-exfiltration`, `rag-poisoning`**, …) **refuse to generate** — "requires remote generation." Only simpler single-turn plugins (`pii:direct`, `prompt-extraction`, `sql-injection`, `harmful:*`) work fully local. |
+| **Multi-turn `crescendo`, OpenAI as attacker** | OpenAI **rejects the attack-generation calls** with `400 cyber_policy` ("flagged for possible cybersecurity risk"). Routed through Promptfoo's remote service instead, it proceeds. |
+
+**Takeaway:** a genuinely air-gapped red-team run only covers a subset of plugins; exercising
+the application-layer threats this POC targets requires Promptfoo's remote generation service.
+
+### H3 (HTTP provider + multi-turn sessions) — resolved
+
+The design flagged this as the most likely blocker (§8/§13.4). Verified working on 0.121.17:
+- Request body templating + `transformResponse: 'json.reply'` extract the reply correctly.
+- Multi-turn session wiring is `sessionSource: client` + `stateful: true` (the design skeleton's
+  `sessions: {source: client}` is **not** the syntax for this version). Promptfoo mints a
+  `sessionId` and injects it into each request, threading the conversation through SupportBot's
+  in-process session store.

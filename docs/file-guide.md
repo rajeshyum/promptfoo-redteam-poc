@@ -105,3 +105,26 @@ in **`_lib.sh`**; run **`./scenarios.sh`** for the full list with runtimes.
 
 `.venv/`, `node_modules/` and `__pycache__/` are likewise gitignored build products, created by
 `python3 -m venv .venv` and `npm install`.
+
+---
+
+## Scan artifacts
+
+**Three artifacts per scan, and they are not interchangeable:**
+
+| File | What it is |
+|---|---|
+| `output/<name>-cases.yaml` | What `redteam run -o` writes — a full **eval export** (`evalId` / `results` / `config` / `metadata`), *not* a bare case list, despite the flag name. |
+| `output/<name>-replay.yaml` | The `config` section lifted to the top level by `extract-cases.mjs`, so it is a valid config. **This is the file `rescan.sh` and `ci-gate.sh` replay.** |
+| `output/<name>-results.json` | The graded results, exported explicitly afterwards. |
+
+> ⚠️ Passing `-cases.yaml` straight to `-c` fails with the misleading
+> `You must specify at least 1 provider` — the providers are nested under `config`, not at the
+> top level. `_lib.sh resolve_cases()` handles the lift; call that rather than the raw file.
+> `redteam run` alone leaves results only in the local DB, so a scan without the export step
+> leaves no reviewable record.
+
+> ⚠️ `report.sh` / `view.sh` serve a **local** dashboard — nothing is uploaded. Publishing
+> to promptfoo.app requires the separate `promptfoo share` command; keep it **off** — run
+> artifacts may contain adversarial/harmful content (already gitignored under `redteam/`).
+> The Promptfoo Cloud login above is only for remote attack *generation*, not for viewing.
