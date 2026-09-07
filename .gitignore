@@ -1,0 +1,25 @@
+# Secrets — NEVER commit
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Node / Promptfoo
+node_modules/
+.promptfoo/
+# promptfoo writes its cloud session here when an eval runs from this directory.
+# The file contains a LIVE Promptfoo Cloud API token plus the account email and org id.
+redteam/eval-*/
+
+# Local editor / agent state
+.claude/settings.local.json
+
+# Red-team run artifacts (may contain adversarial/harmful content)
+redteam/output/
+redteam/results.*
+*.redteam.json

@@ -1,0 +1,92 @@
+# CI security gate (design §6 Group B item 10, §9). The POC's §10 rubric scored
+# "CI / workflow integration" a 3 with the note "not validated as a CI gate in this POC" —
+# this is that validation.
+#
+# ⚠️ NOT enabled on push/PR by design. This repo contains a deliberately-vulnerable app; a
+#    workflow that boots it and drives adversarial traffic on every commit is not something to
+#    turn on by default. `workflow_dispatch` keeps it manual, which is also the right posture
+#    for a real service: red-team scans are slow and cost tokens, so they belong on a nightly
+#    schedule or a release gate, not on every push.
+#
+# The two design decisions that make this a usable gate (see redteam/ci-gate.sh for the why):
+#   1. It REPLAYS a committed case set instead of generating fresh attacks, so a red build
+#      means the app regressed — not that the attacker got luckier this run.
+#   2. It gates on a THRESHOLD (max_exploited), not on promptfoo's blunt exit-100-on-any-
+#      failure, because model-graded verdicts carry noise.
+name: red-team gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_exploited:
+        description: 'Fail the build if more than this many cases are exploited'
+        default: '0'
+        required: false
+      cases:
+        description: 'Committed case set to replay (path relative to redteam/)'
+        default: 'ci-cases/baseline.yaml'
+        required: false
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # promptfoo 0.121.17 declares engines "^20.20.0 || >=22.22.0" and refuses to start
+      # outside that range — pin explicitly rather than inheriting the runner's default.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: |
+          python -m venv .venv
+          .venv/bin/pip install -q -r supportbot/requirements.txt
+
+      - name: Start SupportBot
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: gpt-4o-mini
+        run: |
+          .venv/bin/uvicorn supportbot.app:app --host 127.0.0.1 --port 8000 \
+            --log-level warning > /tmp/supportbot.log 2>&1 &
+          for _ in $(seq 1 30); do
+            curl -sf http://localhost:8000/health && exit 0
+            sleep 1
+          done
+          echo "SupportBot failed to start"; cat /tmp/supportbot.log; exit 1
+
+      - name: Authenticate promptfoo
+        env:
+          PROMPTFOO_API_KEY: ${{ secrets.PROMPTFOO_API_KEY }}
+        # Replaying a saved case set needs no attack GENERATION, so this login is only
+        # required for the model-graded assertions that reach the remote grader. Skipped
+        # cleanly when the secret is absent.
+        run: |
+          if [ -n "$PROMPTFOO_API_KEY" ]; then
+            ./node_modules/.bin/promptfoo auth login --api-key "$PROMPTFOO_API_KEY"
+          else
+            echo "PROMPTFOO_API_KEY not set — continuing (replay needs no remote generation)"
+          fi
+
+      - name: Red-team gate
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          MAX_EXPLOITED: ${{ inputs.max_exploited }}
+        run: ./redteam/ci-gate.sh "${{ inputs.cases }}"
+
+      # Upload even on failure — the findings are the point of a red build.
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: redteam-findings
+          path: |
+            redteam/output/ci-results.json
+            redteam/output/ci-junit.xml
+          if-no-files-found: warn
